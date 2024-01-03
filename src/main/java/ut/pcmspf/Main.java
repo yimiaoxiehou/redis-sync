@@ -1,9 +1,12 @@
 package ut.pcmspf;
 
 import cn.hutool.core.date.DateTime;
+import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.io.watch.SimpleWatcher;
 import cn.hutool.core.io.watch.WatchMonitor;
+import cn.hutool.core.stream.StreamUtil;
 import cn.hutool.core.thread.ExecutorBuilder;
+import cn.hutool.core.util.HexUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
 import com.moilioncircle.redis.replicator.Configuration;
@@ -26,21 +29,28 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Protocol;
 
 import java.io.Closeable;
+import java.io.File;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.WatchEvent;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static redis.clients.jedis.Protocol.Command.*;
 import static redis.clients.jedis.Protocol.toByteArray;
 
 public class Main {
     static Log log = LogFactory.get();
+    static Long offset = 0L;
+    static String replId = "";
+    static File preAofFile = FileUtil.createTempFile();
 
     public static void main(String[] args) throws IOException, URISyntaxException {
+        System.out.println(readReplIdFromAof("/home/yimiao/appendonly.aof"));
         String source = System.getenv("source");
         String sourcePassword = System.getenv("sourcePassword");
         String target = System.getenv("target");
@@ -82,7 +92,8 @@ public class Main {
         }
         String sourceUrl  = sourceUrlBuilder.toString();
         String targetUrl = targetUrlBuilder.toString();
-        if (sourceUrl.endsWith(".aof") || sourceUrl.endsWith(".rdb")) {
+        if (source.endsWith(".aof") || source.endsWith(".rdb")) {
+            offset = FileUtil.size(new File(sourceUrl));
             ExecutorService executor = ExecutorBuilder.create()//
                     .setCorePoolSize(1)//
                     .setMaxPoolSize(1)//
@@ -95,7 +106,8 @@ public class Main {
                     log.info("==========  Sync done.  ==========");
                     return true;
                 });
-            WatchMonitor.createAll(source, new SimpleWatcher(){
+            File sourceAof = FileUtil.file(source);
+            WatchMonitor.createAll(sourceAof, new SimpleWatcher(){
                 @Override
                 public void onCreate(WatchEvent<?> event, Path currentPath) {
                     this.onModify(event, currentPath);
@@ -108,12 +120,37 @@ public class Main {
 
                 @Override
                 public void onModify(WatchEvent<?> event, Path currentPath) {
-                    log.info("==========  Listen modify. ReSync again  ==========");
-                    executor.submit(()->{
-                        sync(sourceUrl,targetUrl);
-                        log.info("==========  Sync done.  ==========");
-                        return true;
-                    });
+
+                    FileUtil.copy(sourceAof, preAofFile, true);
+                    if (FileUtil.size(sourceAof) > FileUtil.size(preAofFile)) {
+                        
+                        byte[] preAof = FileUtil.readBytes(preAofFile);
+                        byte[] newAof = FileUtil.readBytes(sourceAof);
+                        // 本次同步的aof文件与上次前缀相同，可以直接apply append 部分。
+                        if (Arrays.equals(preAof, Arrays.copyOfRange(newAof, 0, preAof.length))) {
+                            byte[] appendAof = Arrays.copyOfRange(newAof, preAof.length, newAof.length);
+                            File t = FileUtil.createTempFile();
+                            FileUtil.writeBytes(appendAof, t);
+                            log.info("==========  Listen modify. ReSync again  ==========");
+                            executor.submit(()->{
+                                sync("redis://" + t.getAbsolutePath(), targetUrl);
+                                log.info("==========  Sync done.  ==========");
+                                return true;
+                            });
+                        }
+                        
+
+                    } else {
+                        if(FileUtil.size(sourceAof) == FileUtil.size(preAofFile) && FileUtil.checksumCRC32(sourceAof) == FileUtil.checksumCRC32(preAofFile)) {
+                            return;
+                        }
+                        log.info("==========  Listen modify. ReSync again  ==========");
+                        executor.submit(()->{
+                            sync(sourceUrl,targetUrl);
+                            log.info("==========  Sync done.  ==========");
+                            return true;
+                        });
+                    }
                 }
             }).start();
         } else{
@@ -121,7 +158,26 @@ public class Main {
         }
     }
 
+    public static String readReplIdFromAof(String aofFile) throws URISyntaxException, IOException {
+        RedisURI suri = new RedisURI("redis://"+aofFile);
+        Replicator r = dress(new RedisReplicator(suri));
+        AtomicReference<String> replId = new AtomicReference<>();
 
+        r.addEventListener((replicator, event) -> {
+            if (event instanceof AuxField) {
+                if(((AuxField) event).getAuxKey().equals("repl-id")) {
+                    replId.set(((AuxField) event).getAuxValue());
+                    try {
+                        r.close();
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+        });
+        r.open();
+        return replId.get();
+    }
 
     /*
      * Precondition:
@@ -135,6 +191,7 @@ public class Main {
      * 4. Get aof stream from source redis and sync to target redis.
      */
     public static void sync(String sourceUri, String targetUri) throws IOException, URISyntaxException {
+        log.info("Sync start.");
         RedisURI suri = new RedisURI(sourceUri);
         RedisURI turi = new RedisURI(targetUri);
         final ExampleClient target = new ExampleClient(turi.getHost(), turi.getPort());
@@ -151,7 +208,10 @@ public class Main {
                 if(((AuxField) event).getAuxKey().equals("ctime")) {
                     log.info(((AuxField) event).getAuxKey() +": " + DateTime.of(Long.parseLong(((AuxField) event).getAuxValue())));
                 }
-                return;
+                if(((AuxField) event).getAuxKey().equals("repl-id")) {
+                    String curReplId = ((AuxField) event).getAuxValue();
+                    log.info(((AuxField) event).getAuxKey() +": " + curReplId);
+                }
             }
             if (event instanceof DumpKeyValuePair) {
                 DumpKeyValuePair dkv = (DumpKeyValuePair) event;
@@ -183,6 +243,7 @@ public class Main {
 
         r.addCloseListener(replicator -> target.close());
         r.open();
+        log.info("Sync done.");
     }
 
     public static Replicator dress(Replicator r) {
