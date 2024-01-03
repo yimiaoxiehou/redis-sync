@@ -5,4 +5,4 @@ RUN mvn package -DskipTest=true
 
 FROM  openjdk:11-jre
 COPY --from=builder /build/redis-sync*.jar .
-CMD ["java", "-jar", "redis-sync*.jar"]
+CMD  /bin/bash -c 'JAR_FILE=$(ls *.jar) && java -jar $JAR_FILE'
