@@ -41,12 +41,20 @@ import java.util.concurrent.atomic.AtomicReference;
 import static redis.clients.jedis.Protocol.Command.*;
 import static redis.clients.jedis.Protocol.toByteArray;
 
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
 public class Main {
+
     static Log log = LogFactory.get();
     static Long offset = 0L;
-    static String replId = "";
-    static File preAofFile = FileUtil.createTempFile();
-
+    static File preAofFile = null;
+    static ExecutorService executor = ExecutorBuilder.create()
+                    .setCorePoolSize(1)
+                    .setMaxPoolSize(1)
+                    .setKeepAliveTime(0)
+                    .setWorkQueue(new LinkedBlockingQueue<>(2))
+                    .build();
     public static void main(String[] args) throws IOException, URISyntaxException {
         System.out.println(readReplIdFromAof("/home/yimiao/appendonly.aof"));
         String source = System.getenv("source");
@@ -77,81 +85,45 @@ public class Main {
             log.info("System env targetPassword not found. Connect source Redis without AUTH.");
         }
 
-        StringBuilder sourceUrlBuilder = new StringBuilder("redis://");
-        sourceUrlBuilder.append(source);
-        if (sourcePassword != null && !sourcePassword.isBlank() && !source.endsWith(".aof") && !source.endsWith(".rdb")){
-            sourceUrlBuilder.append("?").append("authPassword=").append(sourcePassword);
-        }
-
         StringBuilder targetUrlBuilder = new StringBuilder("redis://");
         targetUrlBuilder.append(target);
         if (targetPassword != null && !targetPassword.isBlank()){
             targetUrlBuilder.append("?").append("authPassword=").append(targetPassword);
         }
-        String sourceUrl  = sourceUrlBuilder.toString();
         String targetUrl = targetUrlBuilder.toString();
         if (source.endsWith(".aof") || source.endsWith(".rdb")) {
-            offset = FileUtil.size(new File(sourceUrl));
-            ExecutorService executor = ExecutorBuilder.create()//
-                    .setCorePoolSize(1)//
-                    .setMaxPoolSize(1)//
-                    .setKeepAliveTime(0)//
-                    .setWorkQueue(new LinkedBlockingQueue<>(2))
-                    .build();
-
+            preAofFile = FileUtil.createTempFile();
+            FileUtil.copy(source, preAofFile.getAbsolutePath(), true);
             executor.submit(()->{
-                    sync(sourceUrl,targetUrl);
-                    log.info("==========  Sync done.  ==========");
-                    return true;
-                });
-            File sourceAof = FileUtil.file(source);
-            WatchMonitor.createAll(sourceAof, new SimpleWatcher(){
+                syncFromAof(source, targetUrl);
+                return true;
+            });
+            WatchMonitor.createAll(FileUtil.file(source), new SimpleWatcher(){
                 @Override
                 public void onCreate(WatchEvent<?> event, Path currentPath) {
                     this.onModify(event, currentPath);
                 }
-
                 @Override
                 public void onOverflow(WatchEvent<?> event, Path currentPath) {
                     this.onModify(event, currentPath);
                 }
-
                 @Override
                 public void onModify(WatchEvent<?> event, Path currentPath) {
-
-                    FileUtil.copy(sourceAof, preAofFile, true);
-                    if (FileUtil.size(sourceAof) > FileUtil.size(preAofFile)) {
-                        
-                        byte[] preAof = FileUtil.readBytes(preAofFile);
-                        byte[] newAof = FileUtil.readBytes(sourceAof);
-                        // 本次同步的aof文件与上次前缀相同，可以直接apply append 部分。
-                        if (Arrays.equals(preAof, Arrays.copyOfRange(newAof, 0, preAof.length))) {
-                            byte[] appendAof = Arrays.copyOfRange(newAof, preAof.length, newAof.length);
-                            File t = FileUtil.createTempFile();
-                            FileUtil.writeBytes(appendAof, t);
-                            log.info("==========  Listen modify. ReSync again  ==========");
-                            executor.submit(()->{
-                                sync("redis://" + t.getAbsolutePath(), targetUrl);
-                                log.info("==========  Sync done.  ==========");
-                                return true;
-                            });
-                        }
-                        
-
-                    } else {
-                        if(FileUtil.size(sourceAof) == FileUtil.size(preAofFile) && FileUtil.checksumCRC32(sourceAof) == FileUtil.checksumCRC32(preAofFile)) {
-                            return;
-                        }
-                        log.info("==========  Listen modify. ReSync again  ==========");
-                        executor.submit(()->{
-                            sync(sourceUrl,targetUrl);
-                            log.info("==========  Sync done.  ==========");
-                            return true;
-                        });
+                    try {
+                        syncFromAof(source, targetUrl);
+                    } catch (IOException | URISyntaxException e) {
+                        log.error(e);
                     }
                 }
             }).start();
+        
         } else{
+            StringBuilder sourceUrlBuilder = new StringBuilder("redis://");
+            sourceUrlBuilder.append(source);
+            if (sourcePassword != null && !sourcePassword.isBlank() && !source.endsWith(".aof") && !source.endsWith(".rdb")){
+                sourceUrlBuilder.append("?").append("authPassword=").append(sourcePassword);
+            }
+            String sourceUrl  = sourceUrlBuilder.toString();
             sync(sourceUrl, targetUrl);
         }
     }
@@ -190,6 +162,8 @@ public class Main {
      */
     public static void sync(String sourceUri, String targetUri) throws IOException, URISyntaxException {
         log.info("Sync start.");
+        log.info("source is: " + sourceUri);
+        log.info("target is: " + targetUri);
         RedisURI suri = new RedisURI(sourceUri);
         RedisURI turi = new RedisURI(targetUri);
         final ExampleClient target = new ExampleClient(turi.getHost(), turi.getPort());
@@ -242,6 +216,30 @@ public class Main {
         r.addCloseListener(replicator -> target.close());
         r.open();
         log.info("Sync done.");
+    }
+
+    public static void syncFromAof(String source, String targetUrl) throws IOException, URISyntaxException {
+
+        File sourceAof = new File(source);
+        log.info("source file（"+source+") change.");
+        if(FileUtil.size(sourceAof) == FileUtil.size(preAofFile) && FileUtil.checksumCRC32(sourceAof) == FileUtil.checksumCRC32(preAofFile)) {
+            log.info("source filesize not change.");
+            return;
+        } else if (FileUtil.size(sourceAof) > FileUtil.size(preAofFile)) {
+            log.info("source filesize large than pre.");
+            byte[] preAof = FileUtil.readBytes(preAofFile);
+            byte[] newAof = FileUtil.readBytes(sourceAof);
+            // 本次同步的aof文件与上次前缀相同，可以直接 apply append 部分。
+            if (Arrays.equals(preAof, Arrays.copyOfRange(newAof, 0, preAof.length))) {
+                byte[] appendAof = Arrays.copyOfRange(newAof, preAof.length, newAof.length);
+                File t = FileUtil.createTempFile(".aof", true);
+                FileUtil.writeBytes(appendAof, t);
+                FileUtil.copy(sourceAof, preAofFile, true);
+                source = t.getAbsolutePath();
+                log.info("==========  Listen modify. ReSync again  ==========");
+            }
+        }
+        sync("redis://" + source, targetUrl);
     }
 
     public static Replicator dress(Replicator r) {
