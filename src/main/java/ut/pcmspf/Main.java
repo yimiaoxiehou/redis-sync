@@ -47,7 +47,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class Main {
 
     static Log log = LogFactory.get();
-    static Long offset = 0L;
     static File preAofFile = null;
     static ExecutorService executor = ExecutorBuilder.create()
                     .setCorePoolSize(1)
@@ -92,10 +91,10 @@ public class Main {
         }
         String targetUrl = targetUrlBuilder.toString();
         if (source.endsWith(".aof") || source.endsWith(".rdb")) {
-            preAofFile = FileUtil.createTempFile();
+            preAofFile = FileUtil.createTempFile(".aof", true);
             FileUtil.copy(source, preAofFile.getAbsolutePath(), true);
             executor.submit(()->{
-                syncFromAof(source, targetUrl);
+                sync("redis://" + source, targetUrl);
                 return true;
             });
             WatchMonitor.createAll(FileUtil.file(source), new SimpleWatcher(){
@@ -162,8 +161,6 @@ public class Main {
      */
     public static void sync(String sourceUri, String targetUri) throws IOException, URISyntaxException {
         log.info("Sync start.");
-        log.info("source is: " + sourceUri);
-        log.info("target is: " + targetUri);
         RedisURI suri = new RedisURI(sourceUri);
         RedisURI turi = new RedisURI(targetUri);
         final ExampleClient target = new ExampleClient(turi.getHost(), turi.getPort());
@@ -219,7 +216,6 @@ public class Main {
     }
 
     public static void syncFromAof(String source, String targetUrl) throws IOException, URISyntaxException {
-
         File sourceAof = new File(source);
         log.info("source file（"+source+") change.");
         if(FileUtil.size(sourceAof) == FileUtil.size(preAofFile) && FileUtil.checksumCRC32(sourceAof) == FileUtil.checksumCRC32(preAofFile)) {

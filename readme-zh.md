@@ -1,17 +1,17 @@
-### this project is for sync redis by remote redis or redis AOF/RDB file
+### 本项目用于远程 redis 同步，数据源可以是 redis 或 AOF文件 或 RDB 文件
 
-### this project power on [redis-replicator](https://github.com/leonchen83/redis-replicator)
+### 该项目基于 [redis-replicator](https://github.com/leonchen83/redis-replicator)
 
-### args：
+### 参数说明：
  
 | arg            | require | example                                                                                     |
 |----------------|---------|---------------------------------------------------------------------------------------------|
-| source         | true    | 127.0.0.1:6379  （source can be a redis address or redis AOF filepath or redis RDB filepath） |
-| target         | true    | 127.0.0.1:6380                                       |
-| sourcePassword | false   | 123456                                                                                      |
-| targetPassword | false   | 123456                                                                                      |
+| source         | true    | 127.0.0.1:6379  （同步源，可以为 redis 地址，也可以为 aof/rdb 文件路径） |
+| target         | true    | 127.0.0.1:6380                   |
+| sourcePassword | false   | 同步源密码123456                                                                                      |
+| targetPassword | false   | 目标密码123456                                                                                      |
 
-### usage:
+### 用例
 
 1. Redis to Redis
     ```
