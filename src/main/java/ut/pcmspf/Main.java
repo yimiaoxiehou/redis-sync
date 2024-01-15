@@ -362,6 +362,7 @@ public class Main {
                 try {
                     this.jedis = new Jedis(hostAndPort, config);
                 } catch (JedisConnectionException e) {
+                    log.error(e);
                     log.error("redis connect error. try again after 30s");
                     ThreadUtil.safeSleep(retryTimes * 10 * 1000);
                     initJedis(hostAndPort, config, retryTimes);
