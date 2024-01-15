@@ -348,21 +348,22 @@ public class Main {
     public static class ExampleClient implements Closeable {
 
         private Jedis jedis;
+        private static final int JEDIS_INIT_MAX_RETRY_TIMES = 5;
 
         public ExampleClient(final String host, final int port) throws InterruptedException {
             HostAndPort hostAndPort = new HostAndPort(host, port);
             JedisClientConfig config =  DefaultJedisClientConfig.builder().timeoutMillis(10000).build();
-            initJedis(hostAndPort, config, 5);
+            initJedis(hostAndPort, config, 0);
         }
 
         private void initJedis(HostAndPort hostAndPort, JedisClientConfig config, int retryTimes){
-            if (retryTimes > 0) {
-                retryTimes--;
+            if (retryTimes < JEDIS_INIT_MAX_RETRY_TIMES) {
+                retryTimes++;
                 try {
                     this.jedis = new Jedis(hostAndPort, config);
                 } catch (JedisConnectionException e) {
                     log.error("redis connect error. try again after 30s");
-                    ThreadUtil.safeSleep(30 * 1000);
+                    ThreadUtil.safeSleep(retryTimes * 10 * 1000);
                     initJedis(hostAndPort, config, retryTimes);
                 }
             } else if (jedis == null || jedis.isBroken()) {
