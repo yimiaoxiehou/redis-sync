@@ -2,7 +2,7 @@ name: build and push
 on:
   push:
     branches:
-      - sync
+      - main
     tags:
       - "**"
   pull_request:
