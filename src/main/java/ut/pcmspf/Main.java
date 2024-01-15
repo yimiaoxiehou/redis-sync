@@ -55,7 +55,6 @@ public class Main {
                     .setWorkQueue(new LinkedBlockingQueue<>(2))
                     .build();
     public static void main(String[] args) throws IOException, URISyntaxException {
-        System.out.println(readReplIdFromAof("/home/yimiao/appendonly.aof"));
         String source = System.getenv("source");
         String sourcePassword = System.getenv("sourcePassword");
         String target = System.getenv("target");
