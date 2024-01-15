@@ -112,7 +112,7 @@ public class Main {
                 public void onModify(WatchEvent<?> event, Path currentPath) {
                     try {
                         syncFromAof(source, targetUrl);
-                    } catch (IOException | URISyntaxException e) {
+                    } catch (IOException | URISyntaxException | InterruptedException e) {
                         log.error(e);
                     }
                 }
@@ -217,7 +217,7 @@ public class Main {
         log.info("Sync done.");
     }
 
-    public static void syncFromAof(String source, String targetUrl) throws IOException, URISyntaxException {
+    public static void syncFromAof(String source, String targetUrl) throws IOException, URISyntaxException, InterruptedException {
         File sourceAof = new File(source);
         log.info("source file（"+source+") change.");
         if(FileUtil.size(sourceAof) == FileUtil.size(preAofFile) && FileUtil.checksumCRC32(sourceAof) == FileUtil.checksumCRC32(preAofFile)) {
