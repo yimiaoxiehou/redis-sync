@@ -5,6 +5,7 @@ import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.io.watch.SimpleWatcher;
 import cn.hutool.core.io.watch.WatchMonitor;
 import cn.hutool.core.thread.ExecutorBuilder;
+import cn.hutool.core.thread.ThreadUtil;
 import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
 import com.moilioncircle.redis.replicator.Configuration;
@@ -24,7 +25,9 @@ import com.moilioncircle.redis.replicator.util.Strings;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisClientConfig;
 import redis.clients.jedis.Protocol;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 
 import java.io.Closeable;
 import java.io.File;
@@ -346,11 +349,28 @@ public class Main {
 
         private Jedis jedis;
 
-        public ExampleClient(final String host, final int port) {
-            DefaultJedisClientConfig.Builder config = DefaultJedisClientConfig.builder();
-            config.timeoutMillis(10000);
-            this.jedis = new Jedis(new HostAndPort(host, port), config.build());
+        public ExampleClient(final String host, final int port) throws InterruptedException {
+            HostAndPort hostAndPort = new HostAndPort(host, port);
+            JedisClientConfig config =  DefaultJedisClientConfig.builder().timeoutMillis(10000).build();
+            initJedis(hostAndPort, config, 5);
         }
+
+        private void initJedis(HostAndPort hostAndPort, JedisClientConfig config, int retryTimes){
+            if (retryTimes > 0) {
+                retryTimes--;
+                try {
+                    this.jedis = new Jedis(hostAndPort, config);
+                } catch (JedisConnectionException e) {
+                    log.error("redis connect error. try again after 30s");
+                    ThreadUtil.safeSleep(30 * 1000);
+                    initJedis(hostAndPort, config, retryTimes);
+                }
+            } else if (jedis == null || jedis.isBroken()) {
+                log.error("Retry many times, but jedis always is broken. Application exit now.");
+                System.exit(-1);
+            }
+        }
+
 
         public Object send(Protocol.Command cmd, final byte[]... args) {
             Object r = jedis.sendCommand(cmd, args);
