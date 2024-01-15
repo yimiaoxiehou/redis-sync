@@ -57,7 +57,7 @@ public class Main {
                     .setKeepAliveTime(0)
                     .setWorkQueue(new LinkedBlockingQueue<>(2))
                     .build();
-    public static void main(String[] args) throws IOException, URISyntaxException {
+    public static void main(String[] args) throws IOException, URISyntaxException, InterruptedException {
         String source = System.getenv("source");
         String sourcePassword = System.getenv("sourcePassword");
         String target = System.getenv("target");
@@ -161,7 +161,7 @@ public class Main {
      * 3. Use Jedis RESTORE command to restore that dump format to target redis.
      * 4. Get aof stream from source redis and sync to target redis.
      */
-    public static void sync(String sourceUri, String targetUri) throws IOException, URISyntaxException {
+    public static void sync(String sourceUri, String targetUri) throws IOException, URISyntaxException, InterruptedException {
         log.info("Sync start.");
         RedisURI suri = new RedisURI(sourceUri);
         RedisURI turi = new RedisURI(targetUri);
